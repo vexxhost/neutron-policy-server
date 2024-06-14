@@ -2,12 +2,14 @@
 
 import sys
 
-from flask import Flask, Response, request
+from flask import Flask
+from flask import request
+from flask import Response
 import json
 from neutron.common import config
 from neutron.db.models import allowed_address_pair as models
-from neutron.objects.port.extensions import allowedaddresspairs as aap_obj
 from neutron.objects import network as network_obj
+from neutron.objects.port.extensions import allowedaddresspairs as aap_obj
 from neutron.objects import ports as port_obj
 from neutron_lib import context
 from neutron_lib.db import api as db_api
@@ -20,23 +22,25 @@ app = Flask(__name__)
 
 
 def _fetch_context(request):
-    content_type = request.headers.get('Content-Type', default="application/x-www-form-urlencoded")
+    content_type = request.headers.get('Content-Type', "application/x-www-form-urlencoded")
     if content_type == "application/x-www-form-urlencoded":
         data = request.form.to_dict()
+        target = json.loads(data.get("target"))
+        creds = json.loads(data.get("credentials"))
+        rule = json.loads(data.get("rule"))
     elif content_type == "application/json":
         data = request.json
-    target = json.loads(data.get("target")) if (
-            type(data.get("target")) is str) else data.get("target")
-    creds = json.loads(data.get("credentials")) if (
-            type(data.get("credentials")) is str) else data.get("credentials")
+        target = data.get("target")
+        creds = data.get("credentials")
+        rule = data.get("rule")
     ctx = context.Context(user_id=creds["user_id"], project_id=creds["project_id"])
-    return target, ctx
+    return rule, target, ctx
 
 
-#TODO(rlin): Only enable this after neutron bug/2069071 fixed.
-#@app.route("/address-pair", methods=["POST"])
+# TODO(rlin): Only enable this after neutron bug/2069071 fixed.
+# @app.route("/address-pair", methods=["POST"])
 def enforce_address_pair():
-    target, ctx = _fetch_context(request)
+    _, target, ctx = _fetch_context(request)
     # TODO(mnaser): Validate this logic, ideally we should limit this policy
     #               check only if its a provider network
     with db_api.CONTEXT_READER.using(ctx):
@@ -62,8 +66,10 @@ def enforce_address_pair():
 
 @app.route("/port-update", methods=["POST"])
 def enforce_port_update():
-    target, ctx = _fetch_context(request)
-    if "mac_address" not in target and "fixed_ips" not in target:
+    _, target, ctx = _fetch_context(request)
+    if "attributes_to_update" in target and (
+        "mac_address" not in target["attributes_to_update"]) and (
+            "fixed_ips" not in target["attributes_to_update"]):
         return Response("True", status=200, mimetype="text/plain")
     with db_api.CONTEXT_READER.using(ctx):
         ports = port_obj.Port.get_objects(ctx, id=target["id"])
@@ -73,11 +79,10 @@ def enforce_port_update():
         fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in ports[0].fixed_ips]
 
         query = ctx.session.query(models.AllowedAddressPair).filter(
-            models.AllowedAddressPair.mac_address.in_([ports[0].mac_address])
+            models.AllowedAddressPair.mac_address.in_([str(ports[0].mac_address)])
         ).filter(models.AllowedAddressPair.ip_address.in_(fixed_ips))
-
-    pairs = [aap_obj.AllowedAddressPair._load_object(context, db_obj)
-    for db_obj in query.all()]
+        pairs = query.all()
+    pairs = [aap_obj.AllowedAddressPair._load_object(context, db_obj) for db_obj in query.all()]
     if len(pairs) > 0:
         return Response("Address pairs dependency found for this port.", status=403, mimetype="text/plain")
     return Response("True", status=200, mimetype="text/plain")
@@ -85,16 +90,16 @@ def enforce_port_update():
 
 @app.route("/port-delete", methods=["POST"])
 def enforce_port_delete():
-    target, ctx = _fetch_context(request)
+    _, target, ctx = _fetch_context(request)
 
     fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in target["fixed_ips"]]
     with db_api.CONTEXT_READER.using(ctx):
         query = ctx.session.query(models.AllowedAddressPair).filter(
-            models.AllowedAddressPair.mac_address.in_([target["mac_address"]])
+            models.AllowedAddressPair.mac_address.in_([str(target["mac_address"])])
         ).filter(models.AllowedAddressPair.ip_address.in_(fixed_ips))
 
-    pairs = [aap_obj.AllowedAddressPair._load_object(context, db_obj)
-    for db_obj in query.all()]
+    pairs = query.all()
+    pairs = [aap_obj.AllowedAddressPair._load_object(context, db_obj) for db_obj in query.all()]
     if len(pairs) > 0:
         return Response("Address pairs dependency found for this port.", status=403, mimetype="text/plain")
     return Response("True", status=200, mimetype="text/plain")
