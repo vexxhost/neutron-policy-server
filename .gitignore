@@ -15,4 +15,3 @@ nosetests.xml
 # pbr generates these
 AUTHORS
 ChangeLog
-

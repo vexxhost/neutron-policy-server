@@ -23,13 +23,13 @@ inline callbacks.
 from unittest import mock
 
 import fixtures
-from oslo_config import cfg
 import testtools
+from oslo_config import cfg
 
 CONF = cfg.CONF
 
 
-@mock.patch('neutron.common.config')
+@mock.patch("neutron.common.config")
 class TestCase(testtools.TestCase):
     """Test case base class for all unit tests."""
 
@@ -40,7 +40,7 @@ class TestCase(testtools.TestCase):
 
     def flags(self, **kw):
         """Override CONF variables for a test."""
-        group = kw.pop('group', None)
+        group = kw.pop("group", None)
         for k, v in kw.items():
             self.override_config(k, v, group)
 
@@ -71,8 +71,8 @@ class TestCase(testtools.TestCase):
         """
         # assertTrue uses msg but assertIs uses message keyword argument
         args = list(args)
-        msg = kwargs.pop('msg', args.pop(0) if args else '')
-        kwargs.setdefault('message', msg)
+        msg = kwargs.pop("msg", args.pop(0) if args else "")
+        kwargs.setdefault("message", msg)
         self.assertIs(True, x, *args, **kwargs)
 
     def assertFalse(self, x, *args, **kwargs):
@@ -83,8 +83,8 @@ class TestCase(testtools.TestCase):
         """
         # assertTrue uses msg but assertIs uses message keyword argument
         args = list(args)
-        msg = kwargs.pop('msg', args.pop(0) if args else '')
-        kwargs.setdefault('message', msg)
+        msg = kwargs.pop("msg", args.pop(0) if args else "")
+        kwargs.setdefault("message", msg)
         self.assertIs(False, x, *args, **kwargs)
 
     def stub_out(self, old, new):
