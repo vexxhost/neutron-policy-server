@@ -3,7 +3,7 @@
 import json
 import sys
 
-from flask import Flask, Response, request
+from flask import Flask, Response, g, request
 from neutron.common import config
 from neutron.db.models import allowed_address_pair as models
 from neutron.objects import network as network_obj
@@ -19,41 +19,42 @@ config.setup_logging()
 app = Flask(__name__)
 
 
-def _fetch_context(request):
+@app.before_request
+def fetch_context():
     content_type = request.headers.get(
         "Content-Type", "application/x-www-form-urlencoded"
     )
     if content_type == "application/x-www-form-urlencoded":
         data = request.form.to_dict()
-        target = json.loads(data.get("target"))
-        creds = json.loads(data.get("credentials"))
-        rule = json.loads(data.get("rule"))
+        g.target = json.loads(data.get("target"))
+        g.creds = json.loads(data.get("credentials"))
+        g.rule = json.loads(data.get("rule"))
     elif content_type == "application/json":
         data = request.json
-        target = data.get("target")
-        creds = data.get("credentials")
-        rule = data.get("rule")
-    ctx = context.Context(user_id=creds["user_id"], project_id=creds["project_id"])
-    return rule, target, ctx
+        g.target = data.get("target")
+        g.creds = data.get("credentials")
+        g.rule = data.get("rule")
+    g.ctx = context.Context(
+        user_id=g.creds["user_id"], project_id=g.creds["project_id"]
+    )
 
 
 # TODO(rlin): Only enable this after neutron bug/2069071 fixed.
 # @app.route("/address-pair", methods=["POST"])
 def enforce_address_pair():
-    _, target, ctx = _fetch_context(request)
     # TODO(mnaser): Validate this logic, ideally we should limit this policy
     #               check only if its a provider network
-    with db_api.CONTEXT_READER.using(ctx):
-        network = network_obj.Network.get_object(ctx, id=target["network_id"])
+    with db_api.CONTEXT_READER.using(g.ctx):
+        network = network_obj.Network.get_object(g.ctx, id=g.target["network_id"])
     if network["shared"] is False:
         return Response("Not shared network", status=403, mimetype="text/plain")
 
-    for allowed_address_pair in target.get("allowed_address_pairs", []):
-        with db_api.CONTEXT_READER.using(ctx):
+    for allowed_address_pair in g.target.get("allowed_address_pairs", []):
+        with db_api.CONTEXT_READER.using(g.ctx):
             ports = port_obj.Port.get_objects(
-                ctx,
-                network_id=target["network_id"],
-                project_id=target["project_id"],
+                g.ctx,
+                network_id=g.target["network_id"],
+                project_id=g.target["project_id"],
                 mac_address=allowed_address_pair["mac_address"],
             )
         if len(ports) != 1:
@@ -70,22 +71,21 @@ def enforce_address_pair():
 
 @app.route("/port-update", methods=["POST"])
 def enforce_port_update():
-    _, target, ctx = _fetch_context(request)
     if (
-        "attributes_to_update" in target
-        and ("mac_address" not in target["attributes_to_update"])
-        and ("fixed_ips" not in target["attributes_to_update"])
+        "attributes_to_update" in g.target
+        and ("mac_address" not in g.target["attributes_to_update"])
+        and ("fixed_ips" not in g.target["attributes_to_update"])
     ):
         return Response("True", status=200, mimetype="text/plain")
-    with db_api.CONTEXT_READER.using(ctx):
-        ports = port_obj.Port.get_objects(ctx, id=target["id"])
+    with db_api.CONTEXT_READER.using(g.ctx):
+        ports = port_obj.Port.get_objects(g.ctx, id=g.target["id"])
         if len(ports) == 0:
             return Response("No match port found.", status=403, mimetype="text/plain")
 
         fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in ports[0].fixed_ips]
 
         query = (
-            ctx.session.query(models.AllowedAddressPair)
+            g.ctx.session.query(models.AllowedAddressPair)
             .filter(
                 models.AllowedAddressPair.mac_address.in_([str(ports[0].mac_address)])
             )
@@ -107,14 +107,14 @@ def enforce_port_update():
 
 @app.route("/port-delete", methods=["POST"])
 def enforce_port_delete():
-    _, target, ctx = _fetch_context(request)
-
-    fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in target["fixed_ips"]]
-    with db_api.CONTEXT_READER.using(ctx):
+    fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in g.target["fixed_ips"]]
+    with db_api.CONTEXT_READER.using(g.ctx):
         query = (
-            ctx.session.query(models.AllowedAddressPair)
+            g.ctx.session.query(models.AllowedAddressPair)
             .filter(
-                models.AllowedAddressPair.mac_address.in_([str(target["mac_address"])])
+                models.AllowedAddressPair.mac_address.in_(
+                    [str(g.target["mac_address"])]
+                )
             )
             .filter(models.AllowedAddressPair.ip_address.in_(fixed_ips))
         )
