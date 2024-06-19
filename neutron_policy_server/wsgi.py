@@ -21,6 +21,10 @@ app = Flask(__name__)
 
 @app.before_request
 def fetch_context():
+    # Skip detail data fetch if we're running health check
+    if request.path == "/health":
+        g.ctx = context.Context()
+        return
     content_type = request.headers.get(
         "Content-Type", "application/x-www-form-urlencoded"
     )
@@ -131,6 +135,13 @@ def enforce_port_delete():
             mimetype="text/plain",
         )
     return Response("True", status=200, mimetype="text/plain")
+
+
+@app.route("/health", methods=["POST"])
+def health_check():
+    with db_api.CONTEXT_READER.using(g.ctx):
+        port_obj.Port.get_objects(g.ctx, id="neutron_policy_server_health_check")
+        return Response(status=200)
 
 
 def create_app():
