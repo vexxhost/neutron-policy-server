@@ -171,5 +171,5 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
         self.assertEqual(403, response.status_code)
 
     def test_health_check_success(self):
-        response = self.client.post("/health")  # pylint: disable=E1101
+        response = self.client.get("/health")  # pylint: disable=E1101
         self.assertEqual(200, response.status_code)

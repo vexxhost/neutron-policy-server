@@ -137,7 +137,7 @@ def enforce_port_delete():
     return Response("True", status=200, mimetype="text/plain")
 
 
-@app.route("/health", methods=["POST"])
+@app.route("/health", methods=["GET"])
 def health_check():
     with db_api.CONTEXT_READER.using(g.ctx):
         port_obj.Port.get_objects(g.ctx, id="neutron_policy_server_health_check")
