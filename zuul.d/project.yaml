@@ -4,9 +4,9 @@
       jobs:
         - tox-linters
         - tox-py310
-          tox-py311
+        - tox-py311
     gate:
       jobs:
         - tox-linters
         - tox-py310
-          tox-py311
+        - tox-py311

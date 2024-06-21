@@ -81,6 +81,7 @@ def enforce_port_update():
         and ("fixed_ips" not in g.target["attributes_to_update"])
     ):
         return Response("True", status=200, mimetype="text/plain")
+
     with db_api.CONTEXT_READER.using(g.ctx):
         ports = port_obj.Port.get_objects(g.ctx, id=g.target["id"])
         if len(ports) == 0:
