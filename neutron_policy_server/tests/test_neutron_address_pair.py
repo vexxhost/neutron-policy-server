@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+
 import pytest
 from neutron.tests.unit.db import test_allowedaddresspairs_db as base_test
 from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
