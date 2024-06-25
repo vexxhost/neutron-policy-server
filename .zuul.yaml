@@ -16,13 +16,13 @@
 - job:
     name: neutron-policy-server-build
     parent: build-python-release
-    pre-run: playbooks/release/pre.yaml
     vars:
       release_python: python3
 
 - job:
     name: neutron-policy-server-release
     parent: python-upload-pypi
+    pre-run: playbooks/release/pre.yaml
     vars:
       release_python: python3
     secrets:
