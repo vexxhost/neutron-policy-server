@@ -21,14 +21,11 @@
 
 - job:
     name: neutron-policy-server-release
-    parent: python-upload-pypi
-    pre-run: playbooks/release/pre.yaml
-    vars:
-      release_python: python3
+    parent: neutron-policy-server-build
+    post-run: playbooks/release/post.yaml
     secrets:
       - secret: neutron-policy-server-pypi
         name: pypi_info
-        pass-to-parent: true
 
 - project:
     merge-mode: squash-merge
