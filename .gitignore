@@ -1,0 +1,17 @@
+*.pyc
+cover/
+.coverage*
+!.coveragerc
+.tox
+nosetests.xml
+.testrepository
+.stestr
+.venv
+
+# Packages
+*.egg*
+*.egg-info
+
+# pbr generates these
+AUTHORS
+ChangeLog
