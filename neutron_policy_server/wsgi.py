@@ -11,10 +11,13 @@ from neutron.objects import ports as port_obj
 from neutron.objects.port.extensions import allowedaddresspairs as aap_obj
 from neutron_lib import context
 from neutron_lib.db import api as db_api
+from oslo_log import log as logging
 
 config.register_common_config_options()
 config.init(sys.argv[1:])
 config.setup_logging()
+
+LOG = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -80,12 +83,24 @@ def enforce_port_update():
         and ("mac_address" not in g.target["attributes_to_update"])
         and ("fixed_ips" not in g.target["attributes_to_update"])
     ):
+        LOG.info(
+            "No mac_address or fixed_ips in update targets for port "
+            f"{g.target['id']}, skip check."
+        )
         return Response("True", status=200, mimetype="text/plain")
 
     with db_api.CONTEXT_READER.using(g.ctx):
-        ports = port_obj.Port.get_objects(g.ctx, id=g.target["id"])
+        ports = port_obj.Port.get_objects(g.ctx, id=[g.target["id"]])
         if len(ports) == 0:
-            return Response("No match port found.", status=403, mimetype="text/plain")
+            # Note(ricolin): This happens with ports that are not well defined
+            # and missing context factors like project_id.
+            # Which port usually created by services and design for internal
+            # uses. We can skip this check and avoid blocking services.
+            LOG.info(
+                f"Can't fetch port {g.target['id']} with current "
+                "context, skip this check."
+            )
+            return Response("True", status=200, mimetype="text/plain")
 
         fixed_ips = [str(fixed_ip["ip_address"]) for fixed_ip in ports[0].fixed_ips]
 
@@ -102,11 +117,11 @@ def enforce_port_update():
         for db_obj in query.all()
     ]
     if len(pairs) > 0:
-        return Response(
-            "Address pairs dependency found for this port.",
-            status=403,
-            mimetype="text/plain",
-        )
+        msg = f"Address pairs dependency found for port: {g.target['id']}"
+        LOG.info(msg)
+        return Response(msg, status=403, mimetype="text/plain")
+
+    LOG.info(f"Update check passed for port: {g.target['id']}")
     return Response("True", status=200, mimetype="text/plain")
 
 
@@ -130,18 +145,18 @@ def enforce_port_delete():
         for db_obj in query.all()
     ]
     if len(pairs) > 0:
-        return Response(
-            "Address pairs dependency found for this port.",
-            status=403,
-            mimetype="text/plain",
-        )
+        msg = f"Address pairs dependency found for port: {g.target['id']}"
+        LOG.info(msg)
+        return Response(msg, status=403, mimetype="text/plain")
+
+    LOG.info(f"Delete check passed for port: {g.target['id']}")
     return Response("True", status=200, mimetype="text/plain")
 
 
 @app.route("/health", methods=["GET"])
 def health_check():
     with db_api.CONTEXT_READER.using(g.ctx):
-        port_obj.Port.get_objects(g.ctx, id="neutron_policy_server_health_check")
+        port_obj.Port.get_objects(g.ctx, id=["neutron_policy_server_health_check"])
         return Response(status=200)
 
 
