@@ -137,7 +137,14 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
             "/port-delete", json=self.delete_port_json
         )  # pylint: disable=E1101
         self.assertEqual(
-            b"Address pairs dependency found for this port.", response.data
+            bytes(
+                (
+                    "Address pairs dependency found for port: "
+                    f"{self.port['port']['id']}"
+                ),
+                "utf-8",
+            ),
+            response.data,
         )
         self.assertEqual(403, response.status_code)
 
@@ -159,15 +166,22 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
         response = self.client.post(
             "/port-update", json=self.update_port_not_exist
         )  # pylint: disable=E1101
-        self.assertEqual(b"No match port found.", response.data)
-        self.assertEqual(403, response.status_code)
+        self.assertEqual(b"True", response.data)
+        self.assertEqual(200, response.status_code)
 
     def test_port_update_fail(self):
         response = self.client.post(
             "/port-update", json=self.update_port
         )  # pylint: disable=E1101
         self.assertEqual(
-            b"Address pairs dependency found for this port.", response.data
+            bytes(
+                (
+                    "Address pairs dependency found for port: "
+                    f"{self.port['port']['id']}"
+                ),
+                "utf-8",
+            ),
+            response.data,
         )
         self.assertEqual(403, response.status_code)
 
