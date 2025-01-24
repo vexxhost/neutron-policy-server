@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from copy import deepcopy
+
 import pytest
 from neutron.tests.unit.db import test_allowedaddresspairs_db as base_test
 from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
@@ -106,6 +108,47 @@ class TestAddressPairCasesFlaskBase(
         self.update_port["target"]["attributes_to_update"] = ["mac_address"]
         self.update_port["target"]["mac_address"] = "52:54:00:41:a4:97"
 
+        self.allowed_address_pairs = {
+            "rule": "allowed_address_pairs",
+            "target": self.port_dep["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port_dep["port"]["project_id"],
+            },
+        }
+        self.allowed_address_pairs["target"]["attributes_to_update"] = [
+            "allowed_address_pairs"
+        ]
+        self.allowed_address_pairs["target"]["allowed_address_pairs"] = [
+            {"mac_address": "00:00:00:00:00:01", "ip_address": "10.0.0.1"}
+        ]
+        self.allowed_address_pairs_not_found = deepcopy(self.allowed_address_pairs)
+        self.allowed_address_pairs_not_found["target"]["allowed_address_pairs"] = [
+            {"ip_address": "10.96.250.203", "mac_address": "fa:16:3e:da:ed:0b"}
+        ]
+        self.allowed_address_pairs_address_not_found = deepcopy(
+            self.allowed_address_pairs
+        )
+        self.allowed_address_pairs_address_not_found["target"]["allowed_address_pairs"][
+            0
+        ]["ip_address"] = "10.96.250.203"
+        self.allowed_address_pairs_no_attribute = deepcopy(self.allowed_address_pairs)
+        self.allowed_address_pairs_no_attribute["target"]["attributes_to_update"] = []
+        self.allowed_address_pairs_not_in_attribute = deepcopy(
+            self.allowed_address_pairs
+        )
+        self.allowed_address_pairs_not_in_attribute["target"][
+            "attributes_to_update"
+        ] = ["mac_address"]
+
+        self.allowed_address_pairs_empty = deepcopy(self.allowed_address_pairs)
+        self.allowed_address_pairs_empty["target"]["allowed_address_pairs"] = []
+
+        self.allowed_address_pairs_target_not_found = deepcopy(
+            self.allowed_address_pairs
+        )
+        self.allowed_address_pairs_target_not_found["target"]["id"] = "foo"
+
     @pytest.fixture()
     def app(
         self,
@@ -126,14 +169,14 @@ class TestAddressPairCasesFlaskBase(
 class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
 
     def test_port_delete_success(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-delete", json=self.delete_port_dep_json
         )  # pylint: disable=E1101
         self.assertEqual(b"True", response.data)
         self.assertEqual(200, response.status_code)
 
     def test_port_delete_fail_with_dep(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-delete", json=self.delete_port_json
         )  # pylint: disable=E1101
         self.assertEqual(
@@ -149,30 +192,30 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
         self.assertEqual(403, response.status_code)
 
     def test_port_update_success(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-update", json=self.update_port_dep
         )  # pylint: disable=E1101
         self.assertEqual(b"True", response.data)
         self.assertEqual(200, response.status_code)
 
     def test_port_update_success_no_address_change(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-update", json=self.update_port_no_address
         )  # pylint: disable=E1101
         self.assertEqual(b"True", response.data)
         self.assertEqual(200, response.status_code)
 
     def test_port_update_fail_no_match_port(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-update", json=self.update_port_not_exist
         )  # pylint: disable=E1101
         self.assertEqual(b"True", response.data)
         self.assertEqual(200, response.status_code)
 
     def test_port_update_fail(self):
-        response = self.client.post(
+        response = self.client.post(  # pylint: disable=E1101
             "/port-update", json=self.update_port
-        )  # pylint: disable=E1101
+        )
         self.assertEqual(
             bytes(
                 (
@@ -188,3 +231,78 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
     def test_health_check_success(self):
         response = self.client.get("/health")  # pylint: disable=E1101
         self.assertEqual(200, response.status_code)
+
+    def test_address_pair_success(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs
+        )
+        self.assertEqual(
+            b"True",
+            response.data,
+        )
+        self.assertEqual(200, response.status_code)
+
+    def test_address_pair_success_no_attributes_to_update(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_no_attribute
+        )
+        self.assertEqual(
+            b"True",
+            response.data,
+        )
+        self.assertEqual(200, response.status_code)
+
+    def test_address_pair_success_empty(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_empty
+        )
+        self.assertEqual(
+            b"True",
+            response.data,
+        )
+        self.assertEqual(200, response.status_code)
+
+    def test_address_pair_success_not_in_attributes(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_not_in_attribute
+        )
+        self.assertEqual(
+            b"True",
+            response.data,
+        )
+        self.assertEqual(200, response.status_code)
+
+    def test_address_pair_fail_target_not_found(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_target_not_found
+        )
+        portname = self.allowed_address_pairs_target_not_found["target"]["id"]
+        self.assertEqual(
+            f"Can't fetch port {portname} with current context, skip this check.".encode(
+                "utf-8"
+            ),
+            response.data,
+        )
+        self.assertEqual(403, response.status_code)
+
+    def test_address_pair_fail_mac_not_found(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_not_found
+        )
+        self.assertEqual(
+            b"Zero or Multiple match port found with MAC address fa:16:3e:da:ed:0b.",
+            response.data,
+        )
+        self.assertEqual(403, response.status_code)
+
+    def test_address_pair_fail_address_not_found(self):
+        response = self.client.post(  # pylint: disable=E1101
+            "/address-pair", json=self.allowed_address_pairs_address_not_found
+        )
+        self.assertEqual(
+            f"IP address not exists in network from project {self.port['port']['project_id']}.".encode(
+                "utf-8"
+            ),
+            response.data,
+        )
+        self.assertEqual(403, response.status_code)
