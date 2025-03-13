@@ -212,7 +212,6 @@ def enforce_port_delete():
                 )
             )
 
-    pairs = query.all()
     pairs = [
         aap_obj.AllowedAddressPair._load_object(context, db_obj)
         for db_obj in query.all()
