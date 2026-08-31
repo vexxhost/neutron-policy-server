@@ -4,17 +4,50 @@ import json
 import sys
 
 from flask import Flask, Response, g, request
+from keystoneauth1 import loading as ks_loading
 from neutron.common import config
+from neutron.conf import common as neutron_common_conf
 from neutron.db.models import allowed_address_pair as models
 from neutron.objects import ports as port_obj
 from neutron.objects.port.extensions import allowedaddresspairs as aap_obj
 from neutron_lib import context
 from neutron_lib.db import api as db_api
+from oslo_config import cfg
 from oslo_log import log as logging
+
+# Nova client for checking instance lock state
+try:
+    from novaclient import api_versions
+    from novaclient import client as nova_client
+    from novaclient.exceptions import NotFound
+
+    HAS_NOVA_CLIENT = True
+except ImportError:
+    HAS_NOVA_CLIENT = False
+
+# Security group handling. NOTE: the module is ``securitygroup`` (singular);
+# ``securitygroups`` does not exist and made this import fail silently, leaving
+# sg_obj undefined so the quarantine SG name match raised NameError and the
+# check fell through to "allow".
+try:
+    from neutron.objects import securitygroup as sg_obj
+
+    HAS_NEUTRON_SG = True
+except ImportError:
+    HAS_NEUTRON_SG = False
 
 config.register_common_config_options()
 config.init(sys.argv[1:])
 config.setup_logging()
+
+# Register the [nova] auth/session options so the policy server can build an
+# authenticated Nova client the same way neutron's own nova notifier does. Used
+# to read the VM lock state for quarantine enforcement. neutron.conf (with its
+# [nova] section) is mounted into the sidecar.
+if HAS_NOVA_CLIENT:
+    neutron_common_conf.register_nova_opts(cfg.CONF)
+    ks_loading.register_auth_conf_options(cfg.CONF, "nova")
+    ks_loading.register_session_conf_options(cfg.CONF, "nova")
 
 LOG = logging.getLogger(__name__)
 
@@ -223,6 +256,166 @@ def _check_address_pair_match(
                     return Response(msg, status=403, mimetype="text/plain")
 
     LOG.info(success_msg)
+    return Response("True", status=200, mimetype="text/plain")
+
+
+# Microversion 2.9 is the first that includes the ``locked`` attribute in the
+# server representation; with anything lower ``server.locked`` is absent and the
+# quarantine check would always read False.
+NOVA_API_VERSION = "2.9"
+_NOVA_SESSION = None
+
+
+def _get_nova_client():
+    """Build an authenticated Nova client from the [nova] section of
+    neutron.conf, the same way neutron's own nova notifier does. The keystone
+    session is cached across requests."""
+    global _NOVA_SESSION
+    if not HAS_NOVA_CLIENT:
+        return None
+    try:
+        if _NOVA_SESSION is None:
+            auth = ks_loading.load_auth_from_conf_options(cfg.CONF, "nova")
+            _NOVA_SESSION = ks_loading.load_session_from_conf_options(
+                cfg.CONF, "nova", auth=auth
+            )
+        return nova_client.Client(
+            api_versions.APIVersion(NOVA_API_VERSION),
+            session=_NOVA_SESSION,
+            region_name=cfg.CONF.nova.region_name,
+            endpoint_type=cfg.CONF.nova.endpoint_type,
+        )
+    except Exception as e:
+        LOG.error(f"Failed to create Nova client: {e}")
+        return None
+
+
+def _is_vm_quarantined(instance_id, ctx):
+    """Check if a VM is quarantined (locked with quarantine security group)."""
+    if not HAS_NOVA_CLIENT:
+        LOG.warning("Nova client not available, skipping quarantine check")
+        return False
+
+    try:
+        nova = _get_nova_client()
+        LOG.debug("[quarantine-dbg] nova_client_available=%s", bool(nova))
+        if not nova:
+            return False
+
+        # Check if VM is locked (primary indicator of quarantine)
+        server = nova.servers.get(instance_id)
+        locked = getattr(server, "locked", None)
+        LOG.debug("[quarantine-dbg] instance=%s locked=%r", instance_id, locked)
+        if not locked:
+            return False
+
+        # Look up the ports and their security groups with an ELEVATED (admin)
+        # context. The quarantine SG is typically owned by the admin project and
+        # NOT shared, so the requesting member's context cannot read it and
+        # SecurityGroup.get_object() would return None, making the name match
+        # silently fail.
+        admin_ctx = ctx.elevated()
+
+        with db_api.CONTEXT_READER.using(admin_ctx):
+            ports = port_obj.Port.get_objects(admin_ctx, device_id=[instance_id])
+            LOG.debug(
+                "[quarantine-dbg] instance=%s ports=%s",
+                instance_id,
+                [str(p.id) for p in ports],
+            )
+
+            if not ports:
+                return False
+
+            quarantine_sg_name = "quarantine"  # Default quarantine SG name
+            for port in ports:
+                sg_ids = list(port.security_group_ids or [])
+                LOG.debug("[quarantine-dbg] port=%s sg_ids=%s", port.id, sg_ids)
+                for sg_id in sg_ids:
+                    try:
+                        sg = sg_obj.SecurityGroup.get_object(admin_ctx, id=sg_id)
+                    except Exception:
+                        LOG.exception(
+                            "[quarantine-dbg] sg lookup failed for %s", sg_id
+                        )
+                        continue
+                    LOG.debug(
+                        "[quarantine-dbg] sg=%s name=%r",
+                        sg_id,
+                        getattr(sg, "name", None),
+                    )
+                    if sg and sg.name == quarantine_sg_name:
+                        LOG.debug("[quarantine-dbg] MATCH quarantine sg on port %s", port.id)
+                        return True
+
+        return False
+
+    except NotFound:
+        LOG.debug("[quarantine-dbg] instance %s not found in Nova", instance_id)
+        return False
+    except Exception:
+        LOG.exception(
+            "[quarantine-dbg] error checking quarantine status for %s", instance_id
+        )
+        # If we can't determine quarantine status, be conservative
+        return False
+
+
+@app.route("/port-update-quarantine", methods=["POST"])
+def enforce_port_update_quarantine():
+    """Block security-group / allowed-address-pair changes on a quarantined VM.
+
+    A VM is quarantined when it is Nova-locked AND one of its ports carries a
+    security group named "quarantine". Only project members reach this rule
+    (admins/service bypass it in policy.yaml), so denying here stops a tenant
+    from lifting their own network isolation. Any other update returns "True".
+    """
+    # Only security-group / address-pair changes are relevant.
+    attrs = g.target.get("attributes_to_update") or []
+    LOG.debug(
+        "[quarantine-dbg] ENTER port=%s attrs=%s new_security_groups=%s",
+        g.target.get("id"),
+        attrs,
+        g.target.get("security_groups"),
+    )
+    if not any(a in attrs for a in ("security_groups", "allowed_address_pairs")):
+        LOG.debug("[quarantine-dbg] no security_groups/allowed_address_pairs change -> allow")
+        return Response("True", status=200, mimetype="text/plain")
+
+    # device_owner/device_id are NOT carried in the policy target for a
+    # security-groups-only update (they have defaults and are not
+    # required_by_policy), so resolve them from the port in the DB.
+    with db_api.CONTEXT_READER.using(g.ctx):
+        ports = port_obj.Port.get_objects(g.ctx, id=[g.target["id"]])
+    if not ports:
+        LOG.debug(
+            "[quarantine-dbg] port %s not visible to requester context -> allow",
+            g.target.get("id"),
+        )
+        return Response("True", status=200, mimetype="text/plain")
+
+    device_owner = ports[0].device_owner or ""
+    device_id = ports[0].device_id or ""
+    LOG.debug(
+        "[quarantine-dbg] port=%s device_owner=%r device_id=%r",
+        g.target.get("id"),
+        device_owner,
+        device_id,
+    )
+    if not device_owner.startswith("compute:") or not device_id:
+        LOG.debug("[quarantine-dbg] port not attached to a compute instance -> allow")
+        return Response("True", status=200, mimetype="text/plain")
+
+    quarantined = _is_vm_quarantined(device_id, g.ctx)
+    LOG.debug("[quarantine-dbg] _is_vm_quarantined(%s)=%s", device_id, quarantined)
+    if quarantined:
+        msg = (
+            f"VM {device_id} is quarantined; security group / allowed address "
+            "pair changes are blocked."
+        )
+        LOG.info(msg)
+        return Response(msg, status=403, mimetype="text/plain")
+
     return Response("True", status=200, mimetype="text/plain")
 
 

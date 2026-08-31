@@ -1,3 +1,4 @@
 Flask
 neutron
 neutron-lib
+python-novaclient

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
+from unittest import mock
 
 import pytest
 from neutron.tests.unit.db import test_allowedaddresspairs_db as base_test
@@ -525,3 +526,139 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
             response.data,
         )
         self.assertEqual(403, response.status_code)
+
+    def test_port_update_quarantine_success_no_instance(self):
+        # Test with a port that doesn't have device_owner set
+        update_port_no_instance = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update_port_no_instance["target"]["attributes_to_update"] = ["security_groups"]
+        update_port_no_instance["target"]["security_groups"] = ["sg1"]
+
+        response = self.client.post(  # pylint: disable=E1101
+            "/port-update-quarantine?strict=0", json=update_port_no_instance
+        )
+        self.assertEqual(b"True", response.data)
+        self.assertEqual(200, response.status_code)
+
+    def test_port_update_quarantine_success_not_compute(self):
+        # Test with a port that has device_owner but not compute
+        update_port_not_compute = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update_port_not_compute["target"]["device_owner"] = "network:dhcp"
+        update_port_not_compute["target"]["attributes_to_update"] = ["security_groups"]
+        update_port_not_compute["target"]["security_groups"] = ["sg1"]
+
+        response = self.client.post(  # pylint: disable=E1101
+            "/port-update-quarantine?strict=0", json=update_port_not_compute
+        )
+        self.assertEqual(b"True", response.data)
+        self.assertEqual(200, response.status_code)
+
+    def test_port_update_quarantine_noop_attr_no_instance(self):
+        # A non security-group / address-pair change is never blocked.
+        update_port_no_instance = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update_port_no_instance["target"]["attributes_to_update"] = ["name"]
+        update_port_no_instance["target"]["name"] = "new_name"
+
+        response = self.client.post(  # pylint: disable=E1101
+            "/port-update-quarantine?strict=0", json=update_port_no_instance
+        )
+        self.assertEqual(b"True", response.data)
+        self.assertEqual(200, response.status_code)
+
+    def test_port_update_quarantine_noop_attr_not_compute(self):
+        # A non security-group / address-pair change is never blocked.
+        update_port_not_compute = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update_port_not_compute["target"]["device_owner"] = "network:dhcp"
+        update_port_not_compute["target"]["attributes_to_update"] = ["name"]
+        update_port_not_compute["target"]["name"] = "new_name"
+
+        response = self.client.post(  # pylint: disable=E1101
+            "/port-update-quarantine?strict=0", json=update_port_not_compute
+        )
+        self.assertEqual(b"True", response.data)
+        self.assertEqual(200, response.status_code)
+
+    def test_port_update_quarantine_blocks_quarantined_vm(self):
+        # A security-groups change on a compute port whose VM is quarantined
+        # must be denied (403).
+        update = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update["target"]["attributes_to_update"] = ["security_groups"]
+        update["target"]["security_groups"] = []
+
+        fake_port = mock.Mock(
+            id=self.port["port"]["id"],
+            device_owner="compute:nova",
+            device_id="inst-uuid",
+        )
+        with mock.patch.object(
+            wsgi.port_obj.Port, "get_objects", return_value=[fake_port]
+        ), mock.patch.object(
+            wsgi, "_is_vm_quarantined", return_value=True
+        ) as mock_check:
+            response = self.client.post(  # pylint: disable=E1101
+                "/port-update-quarantine", json=update
+            )
+        self.assertEqual(403, response.status_code)
+        self.assertIn(b"quarantined", response.data)
+        mock_check.assert_called_once_with("inst-uuid", mock.ANY)
+
+    def test_port_update_quarantine_allows_when_not_quarantined(self):
+        # Same request shape, but the VM is not quarantined -> allowed.
+        update = {
+            "rule": "update_port",
+            "target": self.port["port"].copy(),
+            "credentials": {
+                "user_id": "fake_user",
+                "project_id": self.port["port"]["project_id"],
+            },
+        }
+        update["target"]["attributes_to_update"] = ["security_groups"]
+        update["target"]["security_groups"] = []
+
+        fake_port = mock.Mock(
+            id=self.port["port"]["id"],
+            device_owner="compute:nova",
+            device_id="inst-uuid",
+        )
+        with mock.patch.object(
+            wsgi.port_obj.Port, "get_objects", return_value=[fake_port]
+        ), mock.patch.object(wsgi, "_is_vm_quarantined", return_value=False):
+            response = self.client.post(  # pylint: disable=E1101
+                "/port-update-quarantine", json=update
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(b"True", response.data)
