@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Policy decisions shared by the HTTP policy server and in-process checks.
+"""Policy decisions behind the oslo.policy checks in ``checks.py``.
 
 Each function takes a neutron context and the policy target, reads whatever it
-needs from the database, and returns a :class:`Decision`. The Flask routes in
-``wsgi.py`` and the oslo.policy checks in ``checks.py`` are thin adapters on
-top of these, so a policy behaves the same whichever way neutron calls it.
+needs from the database, and returns a :class:`Decision`.
 """
 
 import collections

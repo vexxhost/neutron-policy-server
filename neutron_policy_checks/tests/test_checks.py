@@ -12,7 +12,7 @@ from neutron.tests.unit.plugins.ml2 import test_security_group
 from oslo_policy import _checks
 from oslo_policy import policy as oslo_policy
 
-from neutron_policy_server import checks
+from neutron_policy_checks import checks
 
 ADMIN_PROJECT = "admin-project"
 MEMBER = "(role:member and project_id:%(project_id)s and {check})"

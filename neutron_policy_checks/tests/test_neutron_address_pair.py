@@ -3,23 +3,20 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-import pytest
 from neutron.tests.unit.db import test_allowedaddresspairs_db as base_test
 from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from oslo_config import cfg
 from oslo_db import options as db_options
 from oslo_policy import _parser
 
-from neutron_policy_server import checks, wsgi
-from neutron_policy_server.tests import test
+from neutron_policy_checks import checks
+from neutron_policy_checks.tests import test
 
 
-class TestAddressPairCasesFlaskBase(
-    test.TestCase, base_test.AllowedAddressPairDBTestCase
-):
+class TestAddressPairCasesBase(test.TestCase, base_test.AllowedAddressPairDBTestCase):
 
     def setUp(self, plugin=None, ext_mgr=None):
-        super(TestAddressPairCasesFlaskBase, self).setUp(plugin)
+        super(TestAddressPairCasesBase, self).setUp(plugin)
         address_pairs = [
             {"mac_address": "00:00:00:00:00:01", "ip_address": "10.0.0.1"},
             {"mac_address": "00:00:00:00:00:02", "ip_address": "10.0.0.2"},
@@ -237,24 +234,10 @@ class TestAddressPairCasesFlaskBase(
         )
         self.allowed_address_pairs_target_not_found["target"]["id"] = "foo"
 
-    @pytest.fixture()
-    def app(
-        self,
-    ):
-        app = wsgi.create_app()
-        yield app
-
-    @pytest.fixture()
-    def client(self, app):
-        return app.test_client()
-
-    @pytest.fixture()
-    def runner(self, app):
-        return app.test_cli_runner()
+        self.client = _InProcessClient(self)
 
 
-@pytest.mark.usefixtures("client_class")
-class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
+class TestAddressPairCases(TestAddressPairCasesBase):
 
     def test_port_delete_success(self):
         response = self.client.post(  # pylint: disable=E1101
@@ -416,10 +399,6 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
         self.assertEqual(b"True", response.data)
         self.assertEqual(200, response.status_code)
 
-    def test_health_check_success(self):
-        response = self.client.get("/health")  # pylint: disable=E1101
-        self.assertEqual(200, response.status_code)
-
     def test_address_pair_success(self):
         response = self.client.post(  # pylint: disable=E1101
             "/address-pair?strict=0", json=self.allowed_address_pairs
@@ -530,12 +509,13 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
 
 
 class _InProcessClient:
-    """Stand-in for the Flask test client that uses the in-process checks.
+    """Evaluate the checks with request-shaped test cases.
 
-    Each URL is turned into its equivalent rule (``/port-delete?strict=0`` ->
+    These cases were written against the former HTTP policy server. Each URL
+    is turned into its equivalent rule (``/port-delete?strict=0`` ->
     ``port_delete:strict=0``), parsed by oslo.policy so the check is resolved
-    through the entry point, and evaluated with the same payload neutron would
-    have sent to the HTTP server.
+    through the entry point, and evaluated with the payload neutron sends to
+    an ``http:`` rule.
     """
 
     CHECKS = {
@@ -549,7 +529,7 @@ class _InProcessClient:
 
     def post(self, url, json):
         path, _, query = url.partition("?")
-        # Some tests omit the leading slash, which Flask's client accepts.
+        # Some cases omit the leading slash.
         kind, check_cls = self.CHECKS["/" + path.lstrip("/")]
         check = _parser.parse_rule(f"{kind}:{query.replace('&', ',')}")
         self.testcase.assertIsInstance(check, check_cls)
@@ -561,14 +541,3 @@ class _InProcessClient:
             status_code=200 if allowed else 403,
             data=decision.message.encode("utf-8"),
         )
-
-
-class TestAddressPairCasesInProcess(TestAddressPairCasesFlask):
-    """Run every HTTP route test again through the in-process checks."""
-
-    @pytest.fixture()
-    def client(self, app):
-        return _InProcessClient(self)
-
-    def test_health_check_success(self):
-        self.skipTest("The health check only exists on the HTTP server.")
