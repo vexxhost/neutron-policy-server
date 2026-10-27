@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 from neutron.tests.unit.db import test_allowedaddresspairs_db as base_test
 from neutron_lib.api.definitions import allowedaddresspairs as addr_apidef
 from oslo_config import cfg
 from oslo_db import options as db_options
+from oslo_policy import _parser
 
-from neutron_policy_server import wsgi
+from neutron_policy_server import checks, wsgi
 from neutron_policy_server.tests import test
 
 
@@ -525,3 +527,48 @@ class TestAddressPairCasesFlask(TestAddressPairCasesFlaskBase):
             response.data,
         )
         self.assertEqual(403, response.status_code)
+
+
+class _InProcessClient:
+    """Stand-in for the Flask test client that uses the in-process checks.
+
+    Each URL is turned into its equivalent rule (``/port-delete?strict=0`` ->
+    ``port_delete:strict=0``), parsed by oslo.policy so the check is resolved
+    through the entry point, and evaluated with the same payload neutron would
+    have sent to the HTTP server.
+    """
+
+    CHECKS = {
+        "/address-pair": ("address_pair", checks.AddressPairCheck),
+        "/port-update": ("port_update", checks.PortUpdateCheck),
+        "/port-delete": ("port_delete", checks.PortDeleteCheck),
+    }
+
+    def __init__(self, testcase):
+        self.testcase = testcase
+
+    def post(self, url, json):
+        path, _, query = url.partition("?")
+        # Some tests omit the leading slash, which Flask's client accepts.
+        kind, check_cls = self.CHECKS["/" + path.lstrip("/")]
+        check = _parser.parse_rule(f"{kind}:{query.replace('&', ',')}")
+        self.testcase.assertIsInstance(check, check_cls)
+
+        allowed = check(json["target"], json["credentials"], enforcer=None)
+        decision = check.evaluate(json["target"], json["credentials"])
+        self.testcase.assertEqual(decision.allowed, allowed)
+        return SimpleNamespace(
+            status_code=200 if allowed else 403,
+            data=decision.message.encode("utf-8"),
+        )
+
+
+class TestAddressPairCasesInProcess(TestAddressPairCasesFlask):
+    """Run every HTTP route test again through the in-process checks."""
+
+    @pytest.fixture()
+    def client(self, app):
+        return _InProcessClient(self)
+
+    def test_health_check_success(self):
+        self.skipTest("The health check only exists on the HTTP server.")
