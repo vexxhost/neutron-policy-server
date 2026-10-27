@@ -1,5 +1,5 @@
 [gerrit]
 host=review.vexxhost.dev
 port=29418
-project=neutron-policy-server.git
+project=neutron-policy-checks.git
 defaultbranch=main

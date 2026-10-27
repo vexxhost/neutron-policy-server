@@ -1,19 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-process oslo.policy checks for neutron-server.
+"""oslo.policy checks for neutron-server.
 
 oslo.policy loads these through the ``oslo.policy.rule_checks`` entry point,
 so they run inside the neutron-server API worker during normal policy
-enforcement, with no HTTP round trip. They call the same decisions as the HTTP
-policy server, so each ``http:`` rule has a direct in-process equivalent::
+enforcement. Each replaces an ``http:`` rule of the former neutron-policy-server
+sidecar, or adds a new policy::
 
     http://neutron-server:9697/address-pair?strict=0  ->  address_pair:strict=0
     http://neutron-server:9697/port-update            ->  port_update:strict=1
     http://neutron-server:9697/port-delete?strict=0   ->  port_delete:strict=0
-
-Some policies are only available in-process::
-
-    quarantine:security_group=quarantine
+                                                          quarantine:security_group=quarantine
 """
 
 import copy
@@ -26,9 +23,10 @@ LOG = logging.getLogger(__name__)
 
 
 def _normalize(target):
-    """Give the decision the same target the HTTP policy server would get.
+    """Give the decision the same target an ``http:`` rule would send.
 
-    Mirrors oslo.policy's HttpCheck payload: ``object()`` sentinels such as
+    Mirrors oslo.policy's HttpCheck payload, which the decisions were written
+    against: ``object()`` sentinels such as
     ATTR_NOT_SPECIFIED become ``{}`` and the result goes through a JSON round
     trip, which turns non-JSON values (UUIDs, netaddr objects) into strings.
     """
@@ -61,7 +59,7 @@ class _PolicyCheck(policy.Check):
         # Imported lazily: oslo.policy loads every installed rule_checks
         # extension when it parses rules, including in processes that never
         # set up neutron's database.
-        from neutron_policy_server import policies
+        from neutron_policy_checks import policies
 
         return self.decide(policies, policies.context_from_creds(creds), target)
 
@@ -69,7 +67,7 @@ class _PolicyCheck(policy.Check):
         try:
             return self.evaluate(_normalize(target), creds).allowed
         except Exception:
-            # Fail closed, like an http: rule whose server returns an error.
+            # Fail closed: an error must not grant access.
             LOG.exception("Policy check %s:%s failed, denying", self.kind, self.match)
             return False
 
@@ -79,7 +77,7 @@ class _StrictCheck(_PolicyCheck):
 
     @property
     def strict(self):
-        # Same parsing as the HTTP server's ``?strict=`` query argument.
+        # Anything that isn't an integer means strict, as it always has.
         try:
             return bool(int(self.values["strict"]))
         except ValueError:
